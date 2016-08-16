@@ -1,0 +1,317 @@
+---
+title: "Week 9 - DGE using edgeR"
+output: html_document
+---
+
+This week we'll use the [Bioconductor](http://www.bioconductor.org/) package [edgeR](http://www.bioconductor.org/packages/release/bioc/html/edgeR.html) to carry out differential gene expression in R, and learn some more useful R commands. This lab is also intended to help you get started on the assignment, which will use related data.
+
+edgeR is designed to detect differential gene expression in counts from RNA-seq data. We'll be looking for genes which are differentially expressed between women and men.
+
+To get started, log into RStudio on the COMP90014 servers, or if you prefer, on your own computer. See the [Week 8 lab](r_intro_workshop.html) for details.
+
+
+### R scripts
+
+We'll be working in the RStudio console window. This is convenient and interactive, but won't be saved if you close RStudio, or if something happens to your cloud instance. Last week we looked at how to save your command history as a file, but that saves *everything* you've typed into the Console, so it can be pretty messy.
+
+We'll look at how to create and use an R script, which is a much neater way to save and re-run your work. As you go through this lab, you can copy commands you want to save from the console into the script.
+
+Select **File -> New File -> R Script**. This will open a file in a new tab. Type some R commands into this file - e.g.
+```{r eval=FALSE}
+x <- 1:10
+y <- x**3
+print(y)
+plot(y, type="l")
+```
+Now save the file using **File -> Save**. Save it as `week9.R`.
+
+Now that the script is saved to disk, try running it. In the Console, enter
+```{r eval=FALSE}
+source("week9.R")
+```
+You should see the output from all the commands in the script - both the print statement and the plot.
+
+If you're on a server, you have saved your script only to the server. If you want to keep it, you should make sure to back it up elsewhere. You can download a local copy of your script using the **Files** tab in the lower-right window. Select the checkbox next to the file, then select **More -> Export**.
+
+### Get the data
+
+This data comes from a deep RNA-sequencing study on participants in the 1000 genomes project. We've provided a table of counts, which was created by aligning RNA-seq data to the reference genome, and counting the reads aligned to each gene using HTseq (this tool should be installed into Galaxy on your cloud instance).
+
+To download the data from within R, run
+```{r eval=FALSE}
+download.file("http://claresloggett.github.io/comp90014_workshops/coriell_10s_data.tsv", "coriell_10s_data.tsv")
+```
+This will download the file into your home directory.
+
+R has an extremely useful set of functions for reading tabular data into a data frame variable. The core one is `read.table()`. We'll give it the filename and tell it that the columns in the file are tab-separated ("\\t" stands for the tab character), and that the top row is the header with the column names.
+```{r}
+alldata <- read.table("coriell_10s_data.tsv", header=TRUE, sep="\t")
+```
+
+Let's explore this data a bit. The size of the table:
+```{r}
+dim(alldata)
+```
+
+The column names:
+```{r}
+colnames(alldata)
+```
+
+You can also use `rownames()` to see the row names, which will be gene identifiers.
+
+Try also using `head()` to look at just the top few rows of the data frame.
+
+We can see that the first 10 columns are female patients, the next 10 are male, and the final four are reference information about the genes. So, we can refer to just the female patients with a vector `1:10`, like so:
+```{r}
+# Three rows, female patient columns
+alldata[1:3,1:10]
+```
+
+<span style="color:blue">**Check your understanding**:</span> display the first few rows for just the male patient columns.
+
+
+#### Reminder: indexing data frames
+
+Data frames can be indexed in several ways, including:
+
+- Numerical vectors specifying which rows/columns we want, e.g. `alldata[1:3,1:10]`
+- Logical (TRUE/FALSE) vectors. These will return any rows/columns corresponding to TRUE values in the vector. For instance, `alldata[alldata$chromosome_name == "Y",]` returns rows where the chromosome name is Y.
+- Names of columns or rows. The count for patient M00103_M, gene ENSG00000156639, can be retrieved with `alldata["ENSG00000156639","M00103_M"]`
+
+### Filter out genes with zeroes: the *apply* function
+
+We want to remove genes with lots of zero counts, as these will cause problems later on. But we only want to remove genes if both female and male samples have lots of zeroes - if just one gender has zeroes, that might be a differentially expressed gene, exactly what we're looking for, so we don't want to remove it!
+
+We'll use a simple filtering strategy: for each gene, if most female expression counts are zero AND most male expression counts are zero, ignore that gene. We'll say that most counts are zero if the median value is zero. Here's a command that will do this:
+```{r}
+low_counts <- apply(alldata[,1:10],1,median)==0 & apply(alldata[,11:20],1,median)==0
+filtered <- alldata[!low_counts,]
+```
+
+What's going on here? It's ok if you don't fully understand this at this point. However, here's the breakdown:
+
+- `alldata[,1:10]` gets just the female columns
+- `apply()` is an R function which takes the dataframe and applies the function we give it (`median`) to every row. The `1` tells it to apply the function to every row; `2` would mean every column. So for every row (gene), it will find the median count. Try running `apply(alldata[,1:10],1,median)` in your console to see what this returns.
+- `apply(alldata[,1:10],1,median)==0` gives a vector of TRUE and FALSE values - TRUE only for genes where the median is zero.
+- The `&` operator is a logical operator, meaning "and". We're using it to get a TRUE value only if the female patients' median count is zero AND the male patients' median count is zero, for that gene. You can print the vector `low_counts` to see the result.
+- Finally, `!` is a logical operator meaning "not". So we index the rows of our original dataframe with `alldata[!low_counts,]`, which returns only rows where `low_counts` is FALSE.
+
+Try using the `dim()` function to get the size of the filtered data frame. Is it different to the size of the original data frame?
+
+Finally, we'll split our filtered data into the expression values (first 20 columns) and the gene reference information. Run the following commands:
+```{r}
+expression <- filtered[,1:20]
+geneinfo <- filtered[,21:24]
+```
+
+### edgeR
+
+edgeR models RNA-seq counts using a negative binomial distribution. This allows it to model randomness from both:
+
+- The random sampling of RNA molecules which occurs in the sequencing experiment.
+- The small differences between individuals within the same group. That is, we are interested in which genes are differentially expressed due to gender, but not all men will be identical - any two men may have slightly different expression levels of particular genes. 
+
+Load in the edgeR library:
+```{r message=FALSE}
+library(edgeR)
+```
+
+**Note:** If you do not have edgeR installed, you can follow the instructions on the [package website to install](http://www.bioconductor.org/packages/release/bioc/html/edgeR.html). edgeR should already be installed on the teaching servers.
+
+Remember you can use `help(edgeR)`. This will also tell you how to open the edgeR Users Guide - try to do that now. The Quick Start section has a list of most of the commands we'll need today.
+
+**Note:** If you are using a server rather than your own computer, the edgeRUsersGuide(view=TRUE) command may have trouble opening the file. Instead, you can use set view to FALSE to get the location, and then use that location in the download.file function and then open it via the file panel in RStudio (pop-up windows must be enabled).
+
+```{r eval=FALSE}
+download.file(paste("file://",edgeRUsersGuide(view=FALSE),sep=""),"edgeRUsersGuide.pdf")
+```
+
+To tell edgeR to look for differential expression, we'll need to specify which columns of the data frame belong to which group. We know that the first 10 columns are female and the next 10 are male, so we'll make a vector like this:
+```{r eval=TRUE}
+ismale <- c( rep(0,10), rep(1,10) )
+print(ismale)
+```
+Remember that `c()` concatenates things together into one vector. `rep()` stands for repeat, and `rep(x,10)` just gives us a vector with 10 copies of `x`.
+
+The standard way to fit data to groups in a linear model is with a *design matrix*, as discussed in lectures. We can make a design matrix like this:
+```{r}
+X <- model.matrix(~ismale)
+X
+```
+
+In fact, since we are carrying out a simple comparison between two groups, we can just give edgeR the `ismale` vector directly and it will handle the design matrix for us. So, we can create an edgeR `DGEList` object like this:
+```{r}
+dge = DGEList(expression, group=ismale)
+```
+We haven't actually done any differential expression analysis yet, just packaged the count data for edgeR to use. Try `help(DGEList)` for details.
+
+Next, use edgeR's normalisation function, `calcNormFactors()` to scale each sample's counts to take into account that different experiments might have different total quantities of RNA (different "library sizes"). The default is to use TMM (trimmed mean) normalisation, mentioned in lectures. 
+```{r}
+dge <- calcNormFactors(dge)
+```
+This won't actually change the counts table, but it will generate normalisation values which will be used by other edgeR functions. You can see these by examining `dge$samples`.
+
+Now that we have normalised expression counts, let's try visualising them with an MDS plot. MDS stands for "multi-dimensional scaling" and will be covered in later lectures. The `MDSplot()` function will treat the differences between gene expression values as the "distance" between samples, and will try to show us approximately this distance on a two-dimensional plot.
+```{r eval=FALSE}
+plotMDS(dge)
+```
+
+Notice that the male and female samples do seem to be separated. This is encouraging. It means that there is more difference in gene expression between groups than within groups. If you'd like, you can use the `col` parameter of `plotMDS()` to highlight which samples are in which group, by passing in a vector of colours in the same order as the samples. For instance, a vector of ten red and ten blue could be specified with `col=c( rep("red",10), rep("blue",10) )`.
+
+Now let's do our DGE analysis. Carry out edgeR's model-fitting steps on our data:
+
+- use `estimateCommonDisp()` to fit the data to get an estimate of the dispersion parameter (the variance). This is edgeR's estimate of overall dispersion in the negative binomial distribution used to model randomness in RNA-seq counts.  
+- use `estimateTagwiseDisp()` to get *per-gene* estimates of the variance. Some genes may be naturally more variable than others. Because there are many more genes than there are samples, we risk overfitting these estimates to our particular data. edgeR uses the common dispersion from the previous step to create a Bayesian prior, so that the variances of different genes become related to one another and "smoothed out".
+
+To apply these steps, just call each function on the DGEList object and store the new value, just as we did for `calcNormFactors()`.
+
+Apply both steps.
+```{r echo=FALSE}
+dge <- estimateCommonDisp(dge)
+dge <- estimateTagwiseDisp(dge)
+```
+
+Finally, we are ready to look for differential expression. edgeR will do this by looking for statistically significant differences between the means of the negative binomial distributions. Use edgeR's `exactTest()` function:
+```{r}
+results <- exactTest(dge)
+```
+
+You can investigate the `results` object in several ways - try `str()`, `names()` and `head()`. You'll see that `results$table` has three columns for each gene: the log fold-change (how much the gene expression changes between the men and women), the log counts-per-million (normalised counts), and the P-value, which gives the confidence that the observed log fold-change would not occur by chance.
+
+We could filter the results ourselves, with a test like `results$table$PValue < 0.05`, but edgeR provides a convenience function: `topTags()`. Run
+```{r eval=FALSE}
+topTags(results, n=20)
+```
+to see the top 20 genes, sorted by P-value. You can sort by log fold change rather than P-value if you like - check the documentation on the `topTags` function.
+
+<span style="color:blue">**Stop and think:**</span> earlier, we stored a table of information about each gene in the `geneinfo` data frame. How can you look up the information on the top differentially-expressed genes? As a hint, you can get the *identifiers* of these genes with a command like `rownames(topTags(results, n=20))`. These identifiers should also be the row names of the `geneinfo` data frame. If you aren't sure how to solve this, ask a demonstrator.
+
+We should expect to see a lot of genes from the Y chromosome in this top list. What genes do you see that are *not* from the Y chromosome? What do they do?
+
+### Visualisation
+
+**Note:** You can download any images you produce from the **Plots** tab, using **Export -> Save as Image**.
+
+A very common way to visualise expression data is as a *heatmap*. A heatmap is a two-dimensional grid showing colours which correspond to the expression values. R's `heatmap()` function will perform clustering of similar samples and genes, and will draw this grid, which should make it clear that there are sets of genes which have higher or lower expression in one group or the other. We will talk about heatmaps in more detail in the lecture on clustering.
+
+We don't want to include every gene in our heatmap, as it would be too hard to see (and slow to calculate). So we'll use the top differentially expressed genes. You can adjust `n=20` below to choose the number of genes to include.
+
+The edgeR User Guide recommends using the log of the normalised expression counts as the values in the heatmap. 
+```{r eval=FALSE}
+topgenes <- rownames(topTags(results, n=20))
+log_dge <- cpm(dge, prior.count=2, log=TRUE)
+topgenes_log_expression <- log_dge[topgenes,]
+heatmap(topgenes_log_expression)
+```
+
+The default colour scheme can make it hard to see what's going on sometimes. You can adjust it to anything you like. For instance, for red-to-green, with yellow in the middle at zero log fold change:
+```{r eval=FALSE}
+redtogreen <- colorRampPalette(c("red", "yellow", "green"))(n=299)
+heatmap(topgenes_log_expression, col=redtogreen)
+```
+
+Another useful plot to draw can be the distribution of P-values. You can draw this with
+```{r eval=FALSE}
+hist(results$table$PValue, breaks=150)
+```
+The `breaks` parameter specifies how fine-grained the histogram is - we need to set it above the default to see the P-value structure. We'd expect that if there is no differential expression present, the P-values would just be distributed uniformly, from 0 to 1. If there is differential expression, there should be some extra P-values at low values, below 0.05. What do you actually see?
+
+### Sanity checking: random shuffling
+
+There is pretty strong differential expression of some genes between women and men. What would our results look like if there had been *no* significant differential expression?
+
+One way to sanity-check our results is to repeat the analysis, but assign each sample randomly to groups instead of to the correct groups of women vs men. In theory, there should be no significant differential expression between these randomly-assigned groups.
+
+Here's how you can make a random vector of zeroes and ones:
+```{r}
+randomgroup = sample(c(0,1), 20, replace=TRUE)
+randomgroup
+```
+
+If you carry our your DGE analysis but give edgeR `randomgroup` in place of `ismale`, what do you expect to see?
+
+Try it out!
+
+### Extra: Visualise corrected P-values
+
+This section is optional, if you have time.
+
+Earlier, we drew a histogram of P-values. These were the P-values from `results$table$PValue`, which are uncorrected P-values generated by `exactTest()`. What if we want to see the adjusted P-values?
+
+The `topTags()` function generates corrected P-values by calling the `p.adjust()` function. You can try `help(topTags)` and `help(p.adjust)` to see the options, including available methods of multiple hypothesis correction. The default for `topTags()` is "BH" (Benjamini-Hochberg), discussed in lectures.
+
+There are a couple of different ways we could get the full list of adjusted P-values: we could call `topTags()` with the parameter `n` equal to the number of genes, so that it returns all rows. Or we could just call `p.adjust()` ourselves, like so:
+```{r}
+q_values = p.adjust(results$table$PValue, method="BH")
+```
+
+Now we can plot a histogram of corrected P-values:
+```{r eval=FALSE}
+hist(q_values, breaks=150)
+```
+
+Since there are far fewer corrected P-values below 0.05 than there were uncorrected P-values, you may not see anything useful using the default plotting parameters. You may want to set the `breaks` paramter to a higher number, and/or experiment with the `xlim` or `ylim` arguments to `hist()`. These arguments expect a vector with the beginning and end of the desired axis range. For instance, 
+```{r eval=FALSE}
+hist(q_values, breaks=150, ylim=c(0,500))
+```
+will set the y-axis range to 0-500. 
+
+### Extra: DGE by hand
+
+This section is optional, if you have time and are interested. It is more complicated and requires some R syntax that we haven't used before.
+
+In lectures, we discussed the concept of applying a statistical test to every gene. edgeR does this for us using negative binomial distributions, and carries out extra steps to improve the estimate of each gene's variance. 
+
+It can be illustrative to run the statistical tests ourselves instead of calling a library function. Here's an example using t-tests. T-tests won't give us very good result as we only have 10 replicates per condition, but our top few genes will still be sensible.
+
+A t-test in R is called with the `t.test()` function from the stats package. To compare two groups of gene expression values, we use a syntax like `t.test(group1, group2)`. In our data we have 10 samples in each group, so to carry out a t-test on the first gene (row) in the array:
+```{r}
+t.test(expression[1, 1:10], expression[1, 11:20])
+```
+
+This returns several values: t-statistic, p-value, confidence intervals etc. The function actually returns a list containing these values:
+```{r}
+gene1_result <- t.test(expression[, 1:10], expression[, 11:20])
+str(gene1_result)
+```
+
+So we can get just the P-value like this:
+```{r}
+gene1_result$p.value
+```
+
+We're going to want to get a P-value for every gene, i.e. every row in the expression array. This will be easiest if we first write a function which takes in a row and returns a P-value. Here's what such a function could look like in R:
+```{r}
+# expression_row should be a vector (e.g. one row of the array)
+get_pvalue <- function(expression_row){
+  result <- t.test(expression_row[1:10], expression_row[11:20])
+  return(result$p.value)
+}
+```
+Notice that we've hard-coded the number of replicates (10) with our `1:10` and `11:20`. This isn't great but will do for now.
+
+To apply a function to every row of an array, we can use R's `apply()` function. This will give us back a vector (one value per row). 
+```{r}
+p_values <- apply(expression, 1, get_pvalue)
+head(p_values)
+```
+We've given `apply()`:
+
+* the matrix of values
+* a number which specifies whether we want to apply to rows or columns (1 means rows, 2 means columns)
+* the name of the function to apply to each row
+
+Visualising the resulting P-values:
+```{r}
+hist(p_values, breaks=150)
+```
+
+This looks terrible! There is no visible significance spike and the rest of the distribution is far from uniform. In fact what is happening is that since we've just assumed a normal distribution and haven't done any adjustment of variance, our results are very noisy. There are only a few true positives and they are hard to see among all the false positives. More replicates would improve the situation.
+
+You will find however, that since the absence of a Y-chromosome is quite an extreme gene expression difference, that the genes corresponding to the lowest P-values are still likely to be sensible ones. You could also try zooming in on your histogram with the `breaks`, `xlim` and `ylim` parameters, and try doing multiple hypothesis correction with the `p.adjust()` function.
+
+### Extra: Degust
+
+Degust is a useful tool mentioned in the lab. It uses the R library limma (by the same group as edgeR) to generate interactive differential expression plots. If you want to play with it, it is at http://www.vicbioinformatics.com/software.degust.shtml and we've temporarily loaded in today's data [here](http://www.vicbioinformatics.com/degust/compare.html?code=fadd6cc8160b74410a013a7347a2870e).
+

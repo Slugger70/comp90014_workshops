@@ -1,0 +1,254 @@
+---
+title: "Week 11 - Classification"
+output: html_document
+---
+
+This week we will buld a classifier. We start by taking some data and preparing it for our classification algorithm. We will then split the data into training and test datasets and test the model.
+
+This time we'll be looking at classification, so will care more about the phenotype information for each sample than we did last week. Biobase's `pData()` function will be useful.
+
+Some references:
+
+- https://en.wikibooks.org/wiki/Data_Mining_Algorithms_In_R/Classification for examples on how to use the e1071 package to classify data
+- http://rocr.bioinf.mpi-sb.mpg.de/ for information on the ROCR package
+- http://compbio.dfci.harvard.edu/pubs/sbtpaper/ for explanations on phenotypic varables for the breast cancer dataset
+
+### Reminders
+
+You can use `help()` or the `?` operator to get help on any function in R. This also works on many libraries once they are loaded.
+
+To get help on an R operator or R keyword, you can put it in backquotes, e.g. ``help(`+`)`` or ``?`if` ``.
+
+To see a small part of a large variable like a matrix or data frame, try `head()`.
+
+Data frames and matrices can both be indexed with syntax like `X[rows, columns]`. The rows and columns you want can be specified in several ways, including:
+
+- Numerical vectors specifying which rows/columns we want, e.g. `alldata[1:3,1:10]`
+- Logical (TRUE/FALSE) vectors. These will return any rows/columns corresponding to TRUE values in the vector. For instance, `alldata[alldata$chromosome_name == "Y",]` returns rows where the chromosome name is Y.
+- Names of columns or rows. The count for patient M00103_M, gene ENSG00000156639, can be retrieved with `alldata["ENSG00000156639","M00103_M"]`
+
+### Data and libraries
+
+In this lab we will again use data from the R package breastCancerNKI in Bioconductor. To install all the packages we'll need, run:
+```{r eval=FALSE}
+source("http://bioconductor.org/biocLite.R")
+biocLite("breastCancerNKI")
+biocLite("Biobase")
+install.packages("gplots")
+install.packages("e1071")
+install.packages("ROCR")
+```
+
+Some of these may already be installed from last week. `e1071` and `ROCR` are likely to be new.
+
+- `e1071` is a library for classification analysis, which includes a Naive Bayes classifier.
+- `ROCR` is a library for visualising learning performance, with ROC curves, Precision-Recall, etc.
+
+Load all the libraries, and the `nki` dataset:
+```{r results='hide', message=FALSE, warning=FALSE}
+library('Biobase')
+library("breastCancerNKI")
+library('e1071')
+library("gplots")
+library("ROCR")
+data('nki')
+```
+
+From last week's lab, here are a few useful Biobase functions:
+
+- `exprs(nki)` - get the expression matrix. 
+- `featureNames(nki)` - get the feature (e.g. gene) names
+- `experimentData(nki)` - display the experiment information
+- `abstract(nki)` - display the abstract for this dataset
+- `pData(nki)` - phenotype information for each sample (for instance, tumour grade)
+
+This week, you'll need both the expression matrix and the phenotype information. You may want to save both of these to variables.
+
+If you like, you can use `library(help=Biobase)` to see a list of all Biobase functions.
+
+### Naive Bayes: toy data
+
+Paste in the following toy data frame:
+```{r}
+outlook = as.factor(c('Sunny','Sunny','Overcast','Rain','Rain','Rain','Overcast','Sunny','Sunny','Rain','Sunny','Overcast','Overcast','Rain'))
+temperature = as.factor(c('Hot','Hot','Hot','Mild','Hot','Hot','Hot','Mild','Hot','Mild','Mild','Mild','Hot','Mild'))
+humidity = as.factor(c('High','High','High','High','Normal','Normal','Normal','High','Normal','Normal','Normal','High','Normal','High'))
+wind = as.factor(c('Weak','Strong','Weak','Weak','Weak','Strong','Strong','Weak','Weak','Weak','Strong','Strong','Weak','Strong'))
+tennis = as.factor(c('No','No','Yes','Yes','Yes','No','Yes','No','Yes','Yes','Yes','Yes','Yes','No'))
+tennis.df = data.frame(outlook, temperature, humidity, wind, tennis)
+tennis.df
+```
+
+(Notice the `as.factor()` - this will be explained under **Factors in R**, below.)
+
+We'll build a Naive Bayes classifier using the `naiveBayes()` function from the e1071 package. Have a look at the documentation for this function. Call this function with the first four columns as the data `x` and the "tennis"  column as the variable to predict:
+```{r}
+classifier <- naiveBayes(tennis.df[, 1:4], tennis.df[, 5])
+```
+
+Notice that we just used *all* the data to train the model, which leaves no test data! We'll do this a bit better in a moment.
+
+Examine `classifier`. You should see a model which gives the *a priori* probabilities P(Yes) and P(No), as well as the conditional probabilities such as P(Hot|No).
+
+You can use this model with R's `predict()` function to predict values, like
+```{r eval=FALSE}
+predict(classifier, tennis.df[,1:4])
+```
+
+Do the predictions match the training labels? You can compare them directly, but a nice way to check is with a contingency table, also known as a confusion matrix, as shown in lectures. We can use the `table()` function to make a table of predicted labels against actual labels:
+```{r eval=FALSE}
+predicted <- predict(classifier, tennis.df[,1:4])
+table(predicted, tennis.df[,5])
+```
+
+If you try `help(predict)`, you will find you just get documentation on a "generic function" and that it's not very useful. This is because R actually calls a different version of the `predict()` function depending on what kind of classifier object it is given. You can get help on the function that will be called in our case with `help(predict.naiveBayes)`.
+
+#### Smoothing
+
+If you examine the `classifier` object you may see conditional probabilities that are zero. This will be a worse problem in a moment, when we split our dataset and do training with even less data. We can avoid this using the laplace smoothing parameter to add a small prior to the calculated probabilities when they are zero:
+```{r}
+classifier <- naiveBayes(tennis.df[, 1:4], tennis.df[, 5], laplace=1)
+```
+You can alter the amount of smoothing by setting this value to other numbers - higher or lower, it does not have to be an integer.
+
+#### Testing and performance
+
+**Exercise:**
+
+1. Split the data into training data and test data and assign to `trainData` and `testData`. This toy dataset is very small, so split it in half: seven rows of test data and seven of training. Build a Naive Bayes model as above, using only the training data.
+
+2. Predict the classes of the training data and compare to the original labels with a confusion matrix (contingency table) by using `table()` as above. 
+
+3. Predict the classes of the test data and compare to the real labels with a confusion matrix (contingency table).
+
+```{r include=FALSE}
+trainData = tennis.df[1:7,]
+testData = tennis.df[8:14,]
+# OR e.g.
+# randomgroup = sample(c(rep(TRUE,7), rep(FALSE,7)))
+# testData = tennis.df[randomgroup,]
+# trainData = tennis.df[!randomgroup,]
+classifier = naiveBayes(trainData[, 1:4], trainData[, 5], laplace=1)
+```
+
+`predict()` gives us the most likely class, so we are predicting "Yes" for tennis when the probability is above 0.5. We could increase the sensitivity (but lower the specificity) of our prediction by taking a lower probability threshold, and vice-versa. We'll use this to try out ROCR's performance curve functions.
+
+We can see the actual class probabilities using the parameter `type='raw'`:
+```{r}
+predicted_probs = predict(classifier, testData[,1:4], type="raw")
+predicted_probs
+```
+
+Extract the second column (the probability of "Yes") - we'll use this as a threshold to draw some performance curves. 
+
+Try the following functions from the ROCR package on the training and test probabilities:
+
+- `prediction()` - pass in the predicted scores (in this case, Yes probabilities) and real labels, e.g. `prediction(yes_probability_vector, testData[, 5])`. Save the result to a variable.
+- `performance()` - pass in the prediction object you just created, and choose which metrics you'd like to compare (e.g. 'sens', 'prec', 'spec'), e.g. `performance(prediction_result, 'acc', 'sens')`. You can use `help(performance)` to see available metrics. You can plot the actual curve with `plot()`, e.g. `plot(performance(prediction_result, 'acc', 'sens'))`.
+
+Documentation, including reference manual and some introductory slides, is at http://rocr.bioinf.mpi-sb.mpg.de/ , and the reference manual itself is at http://rocr.bioinf.mpi-sb.mpg.de/ROCR.pdf .
+
+**Exercise:** See if you can create an ROC curve. Since there isn't much data, the "curve"" will be quite small and stepped.
+
+### Factors in R
+
+One basic R data type that we haven't yet covered is the **factor**. Factors represent categorical data, and are basically labelled integers. If you have a big data frame full of strings, and many are repeated (such as "Hot" and "Mild"), it's much more efficient to let R store these as integers. This also lets R compare them easily.
+```{r}
+humidity = c('High','High','High','High','Normal','Normal','Normal','High','Normal','Normal','Normal','High','Normal','High')
+print(humidity)
+as.factor(humidity)
+```
+
+Factors can be ordered or unordered. Sometimes the order doesn't matter, but sometimes there is a natural ordering, like 'Normal' and 'High'. You can force an ordering like this:
+```{r}
+factor(humidity, levels = c('Normal','High'))
+```
+
+When you read in tabular data from a file, R may automatically convert columns containing strings to factors. This can be something to watch out for if it's not what you want. You can explicitly control the behaviour of `read.table()` with the `stringsAsFactors` parameter.
+
+`naiveBayes()` will want to treat any class label or non-numeric attribute as a factor, so if you have trouble, check that you are passing it factors rather than strings.
+
+### Breast cancer dataset
+
+Start with your expression matrix from last week ordered by variance. If you don't have that already available, you can generate it with
+```{r}
+all_expr <- exprs(nki)
+variances <- apply(all_expr, 1, var, na.rm=TRUE)
+sorted_expr <- all_expr[order(variances, decreasing=TRUE),]
+```
+
+We'll now carry out a couple of filtering steps to narrow our data down to the samples with useful phenotype. We will take only BRCA-negative patients (as they won't have a risk unduly influenced by the BRCA gene), and only patients where the variable we want to predict - i.e. metastasis-free survival - is available. 
+
+#### Remove germline BRCA carriers
+
+The genes BRCA1 and BRCA2 have a strong effect on breast cancer risk. Patients with a germline mutation in the BRCA genes will have different risks, so we'll build our expression-based classifier with patients who don't. 
+
+Have a look at the phenotype columns:
+```{r eval=TRUE}
+phenotype <- pData(nki)
+colnames(phenotype)
+```
+
+We can see the "brca.mutation" column, which has the information we want. Try looking at this column with `phenotype$brca.mutation`. We want the `0` values (no BRCA mutation). You will also see a lot of `NA`s, where the value is not known! Comparing to an NA gives an NA: try for yourself to run `phenotype$brca.mutation == 0`.
+
+An expression which will work to get only the patients known to have `phenotype$brca.mutation == 0` is:
+```{r eval=FALSE}
+known_brcazero = !is.na(phenotype$brca.mutation) & phenotype$brca.mutation == 0
+filtered_expr = sorted_expr[, known_brcazero]
+filtered_phenotype = phenotype[known_brcazero, ]
+```
+
+#### Remove patients with unknown metastasis status 
+
+In the phenotype column names above, you will see `e.dmfs`. This is metastasis-free survival, the binary variable we'll try to predict using gene expression. If you examine this column of the phenotype table you'll see some `NA` values; let's get rid of these.
+```{r eval=FALSE}
+known_metastasis = !is.na(filtered_phenotype$e.dmfs)
+filtered_expr = filtered_expr[, known_metastasis]
+filtered_phenotype = filtered_phenotype[known_metastasis, ]
+```
+
+If you use `dim()` after both filtering steps, you should discover that you have 97 patients left.
+
+#### Pick classifier geneset size
+
+Pick the top X genes to put into your classifier. This can be however many you want and could in fact be treated as a meta-parameter to test with validation data. You could also get an idea of roughly how many genes might have useful expression patterns by examining the heatmap from last week. For now, try 100.
+
+Since the `filtered_expr` matrix should already be sorted by variance, you can just take the top rows.
+
+### Naive Bayes
+
+#### Training
+
+We'll build a Naive Bayes classifier using the `naiveBayes()` function from the e1071 package. 
+
+The input data to our classifier (x) will be the gene expression values, and the label we'd like to be able to predict (y) will be survival free of metastasis. This is the `e.dmfs` column in the phenotype matrix.
+
+Create a vector using `as.factor()` of your class label (in this case `filtered_phenotype$e.dmfs`).
+
+The `naiveBayes()` function expects the attributes, which in our case are genes, to be columns of the matrix, and samples to be rows. So you may need to take the transpose of `filtered_expr` with `t()`.
+
+Watch out for sample ordering - when building the classifier, you need the samples in y to be in the same order as in X! If you followed the filtering steps above, this should be the case, but you can check it with `rownames()` and `colnames()`.
+
+Split your data into a training set and test set. This means you'll need a training X and corresponding labels y, and a test X and y. You'll have to decide how many samples to use for each set - you should have 97 samples available in total. Typically we'd use more data for training than testing, as discussed in lectures.
+
+Use your training set to build a model with `naiveBayes()`. 
+
+In this case our predictive variables are continuous (i.e. expression values) rather than discrete. The implementation of Naive Bayes we're using will assume these values are normally distributed within each class, and try to predict the mean and variance of the normal distribution. If you examine the resulting classifier in this case you will see that for each class label, we have two parameters for the conditional probabilities; these are the means and standard deviations of the observed expression values in the training data.
+
+#### Test
+
+Use your model with R's `predict()` function to predict the relative probability of labels on the training data. As in the toy data section, you'll need to use the `type='raw'` parameter to the `predict()` function.
+
+Do the same for the test data.
+
+Plot an ROC curve of each set of predictions above using functions from the ROCR package.
+
+#### Advanced
+
+Try a different geneset, does performance change?
+
+You can split your data into training, validation and test if you'd like to choose the geneset based on validation performance. You can then get real performance metrics for the resulting classifier using the test dataset.
+
+You can also try other classifiers from the e1071 package.
+
+
